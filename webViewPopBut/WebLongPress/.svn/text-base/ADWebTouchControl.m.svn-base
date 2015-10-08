@@ -1,0 +1,302 @@
+//
+//  ADWebTouchControl.m
+//  DZWebViewTouch
+//
+//  Created by Chen Andy on 15/7/23.
+//  Copyright (c) 2015年 Andy Chen. All rights reserved.
+//
+
+#import "ADWebTouchControl.h"
+#import "ADWebTouchAnimtaion.h"
+#import "VLDContextSheetItem.h"
+
+@interface ADWebTouchControl ()
+@property(nonatomic, strong)UILongPressGestureRecognizer *longPressGesture;
+@property(nonatomic, strong)ADWebTouchAnimtaion *shadeView;
+@property(nonatomic, strong)VLDContextSheet  *menuView;
+@property(nonatomic, readonly)UIWindow      *window;
+@property(nonatomic, strong)void(^completionBlock)(NSDictionary *rs);
+@property(nonatomic, strong)NSString *url;
+@end
+
+@implementation ADWebTouchControl
+- (id)initWithWebView:(UIWebView *)webView completionBlock:(void(^)(NSDictionary *rs))completionBlock{
+    self = [super init];
+    if (self) {
+        _webView = webView;
+        _completionBlock = completionBlock;
+        _longPressGesture = [[UILongPressGestureRecognizer alloc]initWithTarget:self action:@selector(longPressed:)];
+        _longPressGesture.delegate = (id<UIGestureRecognizerDelegate>)self;
+        
+        [_webView addGestureRecognizer:_longPressGesture];
+    }
+    return self;
+}
+
+- (id)initWithWebView:(UIWebView *)webView orWKWebVIew:(WKWebView *)wkWebView completionBlock:(void(^)(NSDictionary *rs))completionBlock{
+    self = [super init];
+    if (self) {
+        if ([[[UIDevice currentDevice] systemVersion] floatValue] < 8.0) { // iOS 8 code
+            _webView = webView;
+            _longPressGesture = [[UILongPressGestureRecognizer alloc]initWithTarget:self action:@selector(longPressed:)];
+            _longPressGesture.delegate = (id<UIGestureRecognizerDelegate>)self;
+            
+            [_webView addGestureRecognizer:_longPressGesture];
+        } else {
+            _wkWebView = wkWebView;
+            _longPressGesture = [[UILongPressGestureRecognizer alloc]initWithTarget:self action:@selector(wklongPressed:)];
+            _longPressGesture.delegate = (id<UIGestureRecognizerDelegate>)self;
+            
+            [_wkWebView addGestureRecognizer:_longPressGesture];
+        }
+        _completionBlock = completionBlock;
+    }
+    return self;
+}
+
+
+- (void)setWebView:(id )webView {
+    [_webView removeGestureRecognizer:_longPressGesture];
+    if ([[[UIDevice currentDevice] systemVersion] floatValue] < 8.0) { // iOS 8 code
+        _webView = webView;
+        [_webView addGestureRecognizer:_longPressGesture];
+    }else{
+        _wkWebView = webView;
+        [_wkWebView addGestureRecognizer:_longPressGesture];
+    }
+}
+
+- (UIWindow *)window {
+    return [[[UIApplication sharedApplication] delegate] window];
+}
+
+- (CGRect)frameOfElementWithPoint:(CGPoint)touchPoint {
+    NSString *jsElementRect = [NSString stringWithFormat:@"function f(){ var r = document.elementFromPoint(%f, %f).getBoundingClientRect(); return '{{'+r.left+','+r.top+'},{'+r.width+','+r.height+'}}'; } f();",touchPoint.x,touchPoint.y];
+    NSString *result = [_webView stringByEvaluatingJavaScriptFromString:jsElementRect];
+    CGRect rect = CGRectFromString(result);
+    return rect;
+}
+
+- (void)longPressed:(UIGestureRecognizer *)recognizer {
+    switch (recognizer.state) {
+        case UIGestureRecognizerStateBegan: {
+            __weak typeof(self) this = self;
+            CGPoint touchPoint = [recognizer locationInView:self.webView];
+             NSString *jsElement = [NSString stringWithFormat:@"document.elementFromPoint(%f, %f).tagName", touchPoint.x, touchPoint.y];
+            
+            NSString *tagName = [_webView stringByEvaluatingJavaScriptFromString:jsElement];
+            NSLog(@">>> %@", tagName);
+            if ([[tagName lowercaseString] isEqualToString:@"img"]) {
+                NSString *jsElementSrc = [NSString stringWithFormat:@"document.elementFromPoint(%f, %f).src", touchPoint.x, touchPoint.y];
+                _url = [_webView stringByEvaluatingJavaScriptFromString:jsElementSrc];
+                
+                CGRect frame = [self frameOfElementWithPoint:touchPoint];
+                NSLog(@"+++++IMG %@  >>>%@", NSStringFromCGRect(frame), _url);
+                CGRect kframe = [_webView convertRect:frame toView:self.window];
+                
+                //动画接口  图片长按
+                self.webView.scrollView.scrollEnabled = NO;
+                _shadeView = [[ADWebTouchAnimtaion alloc]showRectangleAnimtaionInView:this.window
+                                                                                 rect:kframe completionBlock:^(id rs) {
+                                                    NSNumber *isOK = (NSNumber *)rs;
+                                                    if (isOK.integerValue == 1) {
+                                                        POPSpringAnimation *layerScaleAnimation = [POPSpringAnimation animationWithPropertyNamed:kPOPLayerScaleXY];
+                                                        layerScaleAnimation.springBounciness = 1;
+                                                        layerScaleAnimation.fromValue = [NSValue valueWithCGSize:CGSizeMake(0.99f, 0.99f)];
+                                                        layerScaleAnimation.toValue = [NSValue valueWithCGSize:CGSizeMake(1.0f, 1.0f)];
+                                                        [_webView.layer pop_addAnimation:layerScaleAnimation forKey:@"layerScaleAnimation"];
+                                                        
+                                                        this.menuView = [VLDContextSheet imgPressWithGestureRecognizer:recognizer inView:this.window didSelectedBlock:^(VLDContextSheetItem *item) {
+                                                            if (this.completionBlock && item != nil) {                                                                                                this.completionBlock(@{@"index":@(item.index),@"url":_url,@"type":@"img"});
+                                                            }
+                                                            [_shadeView dismissAction:nil];
+                                                            this.webView.scrollView.scrollEnabled = YES;
+                                                        }];
+                                                    }
+                              }];
+            }else if ([[tagName lowercaseString] isEqualToString:@"a"]) {
+                //超链接长按
+                NSString *jsElementSrc = [NSString stringWithFormat:@"document.elementFromPoint(%f, %f).href", touchPoint.x, touchPoint.y];
+                NSString *jsElementtitle = [NSString stringWithFormat:@"document.elementFromPoint(%f, %f).innerText", touchPoint.x, touchPoint.y];
+               
+                NSString *title = [_webView stringByEvaluatingJavaScriptFromString:jsElementtitle];
+                _url = [_webView stringByEvaluatingJavaScriptFromString:jsElementSrc];
+                
+                NSURL *aURL = [NSURL URLWithString:_url];
+                NSLog(@"+++ %@ _____  %@", _url,title);
+                if (aURL) {
+                    CGRect frame = [self frameOfElementWithPoint:touchPoint];
+                    NSLog(@"+++++LINK %@  >>> %@>>>>", NSStringFromCGRect(frame), _url);
+                    CGRect kframe = [_webView convertRect:frame toView:self.window];
+                    
+                    //动画接口
+                    self.webView.scrollView.scrollEnabled = NO;
+                    _shadeView = [[ADWebTouchAnimtaion alloc]showAnimtaionInView:self.window
+                                                                            rect:kframe completionBlock:^(id rs) {
+                                        NSNumber *isOK = (NSNumber *)rs;
+                                        if (isOK.integerValue == 1) {
+                                            POPSpringAnimation *layerScaleAnimation = [POPSpringAnimation animationWithPropertyNamed:kPOPLayerScaleXY];
+                                            layerScaleAnimation.springBounciness = 2;
+                                            layerScaleAnimation.fromValue = [NSValue valueWithCGSize:CGSizeMake(0.99f, 0.99f)];
+                                            layerScaleAnimation.toValue = [NSValue valueWithCGSize:CGSizeMake(1.0f, 1.0f)];
+                                            [_webView.layer pop_addAnimation:layerScaleAnimation forKey:@"layerScaleAnimation"];
+                                            
+                                            void (^fblock)(void) = ^{
+                                                this.menuView = [VLDContextSheet linkPressWithGestureRecognizer:recognizer inView:self.window  didSelectedBlock:^(VLDContextSheetItem *item) {
+                                                    if (this.completionBlock && item!= nil) {                                                                                                this.completionBlock(@{@"index":@(item.index),@"url":_url,@"type":@"link",@"title":title});
+                                                    }
+                                                    [_shadeView dismissAction:nil];
+                                                    this.webView.scrollView.scrollEnabled = YES;
+                                                }];
+                                            };
+                                                
+                                            [layerScaleAnimation setCompletionBlock:^(POPAnimation *ann, BOOL finish) {
+                                                if (finish) {
+                                                    fblock();
+                                                }
+                                            }];
+                                        }
+                                    }];
+                    }
+                }
+        }
+            break;
+        case UIGestureRecognizerStateEnded: {
+            self.webView.scrollView.scrollEnabled = YES;
+        }
+        default:
+            break;
+    }
+}
+
+- (void)wklongPressed:(UIGestureRecognizer *)recognizer {
+    switch (recognizer.state) {
+        case UIGestureRecognizerStateBegan: {
+            __weak typeof(self) this = self;
+            CGPoint touchPoint = [recognizer locationInView:self.wkWebView];
+            NSString *jsElement = [NSString stringWithFormat:@"document.elementFromPoint(%f, %f).tagName", touchPoint.x, touchPoint.y];
+            
+            [self.wkWebView evaluateJavaScript:jsElement completionHandler:^(NSString *tagName, NSError *error) {
+                NSLog(@">>> %@", tagName);
+                if ([[tagName lowercaseString] isEqualToString:@"img"]) {
+                    NSString *jsElementSrc = [NSString stringWithFormat:@"document.elementFromPoint(%f, %f).src", touchPoint.x, touchPoint.y];
+                    [_wkWebView evaluateJavaScript:jsElementSrc completionHandler:^(NSString *url, NSError *er) {
+                        _url = url;
+                        NSString *jsElementRect = [NSString stringWithFormat:@"function f(){ var r = document.elementFromPoint(%f, %f).getBoundingClientRect(); return '{{'+r.left+','+r.top+'},{'+r.width+','+r.height+'}}'; } f();",touchPoint.x,touchPoint.y];
+                        [_wkWebView evaluateJavaScript:jsElementRect completionHandler:^(NSString *result, NSError *errorRect) {
+                            CGRect rect = CGRectFromString(result);
+                            NSLog(@"+++++LINK %@  >>> %@>>>>", NSStringFromCGRect(rect), _url);
+                            CGRect kframe = [_wkWebView convertRect:rect toView:this.window];
+                            
+                            //动画接口
+                            this.wkWebView.scrollView.scrollEnabled = NO;
+                            //动画接口  图片长按
+                            _shadeView = [[ADWebTouchAnimtaion alloc]showRectangleAnimtaionInView:this.window
+                                                                                             rect:kframe completionBlock:^(id rs) {
+                                                                        NSNumber *isOK = (NSNumber *)rs;
+                                                                        if (isOK.integerValue == 1) {
+                                                                            POPSpringAnimation *layerScaleAnimation = [POPSpringAnimation animationWithPropertyNamed:kPOPLayerScaleXY];
+                                                                            layerScaleAnimation.springBounciness = 1;
+                                                                            layerScaleAnimation.fromValue = [NSValue valueWithCGSize:CGSizeMake(0.99f, 0.99f)];
+                                                                            layerScaleAnimation.toValue = [NSValue valueWithCGSize:CGSizeMake(1.0f, 1.0f)];
+                                                                            [_wkWebView.layer pop_addAnimation:layerScaleAnimation forKey:@"layerScaleAnimation"];
+                                                                            
+                                                                            this.menuView = [VLDContextSheet imgPressWithGestureRecognizer:recognizer inView:this.window didSelectedBlock:^(VLDContextSheetItem *item) {
+                                                                                if (this.completionBlock && item != nil) {                                                                                                this.completionBlock(@{@"index":@(item.index),@"url":_url,@"type":@"img"});
+                                                                                }
+                                                                                [_shadeView dismissAction:nil];
+                                                                                this.wkWebView.scrollView.scrollEnabled = YES;
+                                                                            }];
+                                                                        }
+                                                                    }];
+                        }];
+                    }];
+                }else if ([[tagName lowercaseString] isEqualToString:@"a"]) {
+                    //超链接长按
+                    NSString *jsElementSrc = [NSString stringWithFormat:@"document.elementFromPoint(%f, %f).href", touchPoint.x, touchPoint.y];
+                    NSString *jsElementtitle = [NSString stringWithFormat:@"document.elementFromPoint(%f, %f).innerText", touchPoint.x, touchPoint.y];
+
+                    [_wkWebView evaluateJavaScript:jsElementSrc completionHandler:^(NSString *url, NSError *er) {
+                        _url = url;
+                        NSURL *aURL = [NSURL URLWithString:_url];
+                        __block NSString *title;
+                        [_wkWebView evaluateJavaScript:jsElementtitle completionHandler:^(NSString *rs, NSError *error) {
+                            title = rs;
+                        }];
+                        if (aURL) {
+                            NSString *jsElementRect = [NSString stringWithFormat:@"function f(){ var r = document.elementFromPoint(%f, %f).getBoundingClientRect(); return '{{'+r.left+','+r.top+'},{'+r.width+','+r.height+'}}'; } f();",touchPoint.x,touchPoint.y];
+                            [_wkWebView evaluateJavaScript:jsElementRect completionHandler:^(NSString *result, NSError *errorRect) {
+                                CGRect rect = CGRectFromString(result);
+                                NSLog(@"+++++LINK %@  >>> %@>>>>", NSStringFromCGRect(rect), _url);
+                                CGRect kframe = [_wkWebView convertRect:rect toView:this.window];
+                                
+                                //动画接口
+                                this.wkWebView.scrollView.scrollEnabled = NO;
+                                _shadeView = [[ADWebTouchAnimtaion alloc]showAnimtaionInView:this.window
+                                                                                        rect:kframe completionBlock:^(id rs) {                                                                NSNumber *isOK = (NSNumber *)rs;
+                                                                if (isOK.integerValue == 1) {                                                                    
+                                                                    POPSpringAnimation *layerScaleAnimation = [POPSpringAnimation animationWithPropertyNamed:kPOPLayerScaleXY];
+                                                                    layerScaleAnimation.springBounciness = 2;
+                                                                    layerScaleAnimation.fromValue = [NSValue valueWithCGSize:CGSizeMake(0.99f, 0.99f)];
+                                                                    layerScaleAnimation.toValue = [NSValue valueWithCGSize:CGSizeMake(1.0f, 1.0f)];
+                                                                    [_wkWebView.layer pop_addAnimation:layerScaleAnimation forKey:@"layerScaleAnimation"];
+                                                                    
+                                                                    void (^fblock)(void) = ^{
+                                                                        this.menuView = [VLDContextSheet linkPressWithGestureRecognizer:recognizer inView:this.window  didSelectedBlock:^(VLDContextSheetItem *item) {
+                                                                            if (this.completionBlock && item!= nil) {
+                                                                                NSLog(@"+++ %@ _____  %@", _url,title);
+                                                                                
+                                                                                this.completionBlock(@{@"index":@(item.index),
+                                                                                                       @"url":_url,
+                                                                                                       @"type":@"link",
+                                                                                                       @"title":title});
+                                                                            }
+                                                                            [_shadeView dismissAction:nil];
+                                                                            this.wkWebView.scrollView.scrollEnabled = YES;
+                                                                        }];
+                                                                    };
+                                                                    
+                                                                    [layerScaleAnimation setCompletionBlock:^(POPAnimation *ann, BOOL finish) {
+                                                                        if (finish) {
+                                                                            fblock();
+                                                                        }
+                                                                    }];
+                                                                }
+                                                            }];
+                            }];
+                            
+                        }
+                        
+                    }];
+                    
+                }
+            }];
+            
+        }
+            break;
+        case UIGestureRecognizerStateEnded: {
+            self.wkWebView.scrollView.scrollEnabled = YES;
+        }
+        default:
+            break;
+    }
+}
+
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer shouldRecognizeSimultaneouslyWithGestureRecognizer:(UIGestureRecognizer *)otherGestureRecognizer
+{
+    otherGestureRecognizer.cancelsTouchesInView = NO;
+    if ([otherGestureRecognizer isKindOfClass:[UILongPressGestureRecognizer class]]) {
+        otherGestureRecognizer.enabled = NO;
+    }
+    return YES;
+}
+
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer shouldReceiveTouch:(UITouch *)touch {
+    return YES;
+}
+
+- (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gestureRecognizer {
+    return YES;
+}
+
+@end
