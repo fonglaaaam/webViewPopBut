@@ -1,4 +1,4 @@
-# webViewPopBut/longpress webview
+# webViewPopButton/longpress webview
 这是一个附加在UIView上的长按手势动画 动画分为三部分 
 #### 1长按view识别 
 #### 2黑框围绕（若是webview则区分网页内容是超链接文本或图片） 
